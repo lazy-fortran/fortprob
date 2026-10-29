@@ -1,0 +1,14 @@
+name = "fortprob"
+version = "0.1.0"
+license = "MIT"
+author = "Christopher Albert"
+description = "Gaussian conditioning and coefficient-space probabilistic inference"
+[build]
+auto-tests = true
+[dependencies]
+fortnum = { git = "https://github.com/lazy-fortran/fortnum.git", rev = "ef26a189d39078200f981cbec62bed2515df493a" }
+[dev-dependencies]
+test-drive = { git = "https://github.com/fortran-lang/test-drive.git", rev = "791484a79a24cbc00be6f74e53c6e030cb75efe2" }
+[fortran]
+implicit-typing = false
+source-form = "free"
