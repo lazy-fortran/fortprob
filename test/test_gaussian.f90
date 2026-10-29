@@ -5,16 +5,19 @@ module gaussian_tests
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortprob_gaussian, only: gaussian_condition, gaussian_condition_jvp, &
         gaussian_logpdf, linear_propagate, gaussian_intervals, validate_covariance
-    use fortprob_regression, only: bayesian_linear_fit, bayesian_linear_predict
+    use fortprob_regression, only: bayesian_linear_fit, bayesian_linear_predict, &
+        bayesian_linear_fit_diagonal
     implicit none
 contains
     subroutine collect(tests)
         type(unittest_type), allocatable, intent(out) :: tests(:)
-        tests = [new_unittest('scalar-conditioning', scalar), &
-            new_unittest('correlated-regression', regression), &
-            new_unittest('conditioning-jvp', jvp), &
-            new_unittest('density-propagation-intervals', helpers), &
-            new_unittest('invalid-and-singular', invalid)]
+        allocate(tests(6))
+        tests(1) = new_unittest('scalar-conditioning', scalar)
+        tests(2) = new_unittest('correlated-regression', regression)
+        tests(3) = new_unittest('conditioning-jvp', jvp)
+        tests(4) = new_unittest('diagonal-regression', diagonal)
+        tests(5) = new_unittest('density-propagation-intervals', helpers)
+        tests(6) = new_unittest('invalid-and-singular', invalid)
     end subroutine
     subroutine scalar(error)
         type(error_type), allocatable, intent(out) :: error
@@ -50,6 +53,25 @@ contains
             0.0_dp, 1.0_dp], [2, 2]))) < 1e-14_dp)
         if (allocated(error)) return
         call check(error, maxval(abs(oc - pc - eye)) < 1e-14_dp)
+    end subroutine
+    subroutine diagonal(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(fortnum_status_t) :: s
+        real(dp) :: design(3, 1), noise(3), y(3)
+        real(dp), allocatable :: m(:), c(:, :)
+        design = 1.0_dp; noise = [1.0_dp, 2.0_dp, 4.0_dp]
+        y = [0.0_dp, 2.0_dp, 4.0_dp]
+        call bayesian_linear_fit_diagonal(design, y, noise, [2.0_dp], &
+            reshape([4.0_dp], [1, 1]), m, c, s)
+        call check(error, status_ok(s)); if (allocated(error)) return
+        call check(error, abs(m(1)-1.25_dp) < 1e-14_dp)
+        if (allocated(error)) return
+        call check(error, abs(c(1, 1)-0.5_dp) < 1e-14_dp)
+        if (allocated(error)) return
+        noise(1) = 0.0_dp
+        call bayesian_linear_fit_diagonal(design, y, noise, [2.0_dp], &
+            reshape([4.0_dp], [1, 1]), m, c, s)
+        call check(error, .not. status_ok(s))
     end subroutine
     subroutine jvp(error)
         type(error_type), allocatable, intent(out) :: error

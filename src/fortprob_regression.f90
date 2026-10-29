@@ -3,11 +3,13 @@ module fortprob_regression
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
         FORTNUM_DOMAIN_ERROR
+    use fortnum_cholesky, only: cholesky_factorization_t
     use fortprob_gaussian, only: gaussian_condition, validate_covariance, &
         linear_propagate
     implicit none
     private
-    public :: bayesian_linear_fit, bayesian_linear_predict
+    public :: bayesian_linear_fit, bayesian_linear_predict, &
+        bayesian_linear_fit_diagonal
 contains
     subroutine bayesian_linear_fit(design, y, noise_cov, prior_mean, prior_cov, &
             coef_mean, coef_cov, status)
@@ -21,18 +23,76 @@ contains
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'regression shape/data')
         if (n < 1 .or. p < 1 .or. size(y) /= n) return
         if (size(prior_mean) /= p) return
-        if (any(shape(prior_cov) /= [p, p])) return
-        if (any(shape(noise_cov) /= [n, n])) return
+        if ((size(prior_cov, 1) /= p .or. size(prior_cov, 2) /= p)) return
+        if ((size(noise_cov, 1) /= n .or. size(noise_cov, 2) /= n)) return
         if (.not. all(ieee_is_finite(design))) return
         call validate_covariance(prior_cov, status, .true.)
         if (.not. status_ok(status)) return
         call validate_covariance(noise_cov, status, .true.)
         if (.not. status_ok(status)) return
         cross = matmul(prior_cov, transpose(design))
-        obs_cov = matmul(design, cross) + noise_cov
+        obs_cov = matmul(design, cross)
+        obs_cov = obs_cov + noise_cov
         obs_mean = matmul(design, prior_mean)
         call gaussian_condition(prior_mean, prior_cov, obs_mean, obs_cov, cross, y, &
             coef_mean, coef_cov, status)
+    end subroutine
+
+    subroutine bayesian_linear_fit_diagonal(design, y, noise_variance, &
+            prior_mean, prior_cov, coef_mean, coef_cov, status)
+        real(dp), intent(in) :: design(:, :), y(:), noise_variance(:)
+        real(dp), intent(in) :: prior_mean(:), prior_cov(:, :)
+        real(dp), allocatable, intent(out) :: coef_mean(:), coef_cov(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(cholesky_factorization_t) :: factor
+        real(dp), allocatable :: precision(:, :), weighted(:, :), rhs(:)
+        real(dp), allocatable :: identity(:, :), work(:, :), weighted_y(:), prior_rhs(:)
+        integer :: n, p, i
+        n = size(design, 1); p = size(design, 2)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal regression shape/data')
+        if (n < 1 .or. p < 1 .or. size(y) /= n) return
+        if (size(noise_variance) /= n .or. size(prior_mean) /= p) return
+        if ((size(prior_cov, 1) /= p .or. size(prior_cov, 2) /= p)) return
+        if (.not. all(ieee_is_finite(design))) return
+        if (.not. all(ieee_is_finite(y))) return
+        if (.not. all(ieee_is_finite(prior_mean))) return
+        if (.not. all(ieee_is_finite(noise_variance))) return
+        if (any(noise_variance <= 0.0_dp)) return
+        call validate_covariance(prior_cov, status, .true.)
+        if (.not. status_ok(status)) return
+        allocate(identity(p, p), weighted(n, p))
+        identity = 0.0_dp
+        do i = 1, p
+            identity(i, i) = 1.0_dp
+        end do
+        precision = identity
+        call factor%factorize(prior_cov, status)
+        if (.not. status_ok(status)) return
+        call factor%solve(precision, status)
+        if (.not. status_ok(status)) return
+        ! Assemble coefficient-space normal equations without an n-by-n array.
+        do i = 1, p
+            weighted(:, i) = design(:, i)/noise_variance
+        end do
+        prior_rhs = matmul(precision, prior_mean)
+        weighted_y = y/noise_variance
+        rhs = matmul(transpose(design), weighted_y)
+        rhs = rhs + prior_rhs
+        work = matmul(transpose(design), weighted)
+        precision = precision + work
+        if (.not. all(ieee_is_finite(precision)) .or. &
+            .not. all(ieee_is_finite(rhs))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal regression overflow')
+            return
+        end if
+        call factor%factorize(precision, status)
+        if (.not. status_ok(status)) return
+        call factor%solve(rhs, status)
+        if (.not. status_ok(status)) return
+        call factor%solve(identity, status)
+        if (.not. status_ok(status)) return
+        coef_mean = rhs
+        coef_cov = identity
     end subroutine
 
     subroutine bayesian_linear_predict(design, coef_mean, coef_cov, mean, &
@@ -52,7 +112,8 @@ contains
         call linear_propagate(coef_mean, coef_cov, design, mean, latent_cov, status)
         if (.not. status_ok(status)) return
         if (present(noise_cov)) then
-            if (any(shape(noise_cov) /= shape(latent_cov))) then
+            if ((size(noise_cov, 1) /= size(latent_cov, 1) .or. &
+                size(noise_cov, 2) /= size(latent_cov, 2))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, 'prediction noise shape')
                 deallocate (mean, latent_cov)
                 return

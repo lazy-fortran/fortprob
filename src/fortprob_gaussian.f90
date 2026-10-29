@@ -22,10 +22,11 @@ module fortprob_gaussian
         end subroutine
     end interface
 contains
-    subroutine validate_covariance(cov, status, positive_definite)
+    subroutine validate_covariance(cov, status, positive_definite, reference_scale)
         real(dp), intent(in) :: cov(:, :)
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: positive_definite
+        real(dp), intent(in), optional :: reference_scale
         type(cholesky_factorization_t) :: factor
         real(dp), allocatable :: values(:), vectors(:, :)
         real(dp) :: tolerance
@@ -34,7 +35,13 @@ contains
         n = size(cov, 1)
         if (n < 1 .or. size(cov, 2) /= n) return
         if (.not. all(ieee_is_finite(cov))) return
-        tolerance = 128.0_dp*epsilon(1.0_dp)*real(n, dp)*maxval(abs(cov))
+        tolerance = maxval(abs(cov))
+        if (present(reference_scale)) then
+            if (.not. ieee_is_finite(reference_scale)) return
+            if (reference_scale < 0.0_dp) return
+            tolerance = max(tolerance, reference_scale)
+        end if
+        tolerance = 128.0_dp*epsilon(1.0_dp)*real(n, dp)*tolerance
         if (maxval(abs(cov - transpose(cov))) > tolerance) return
         if (present(positive_definite)) then
             if (positive_definite) then
@@ -65,9 +72,9 @@ contains
         nx = size(mean_x); ny = size(mean_y)
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning shape/data')
         if (nx < 1 .or. ny < 1) return
-        if (any(shape(cov_xx) /= [nx, nx])) return
-        if (any(shape(cov_yy) /= [ny, ny])) return
-        if (any(shape(cov_xy) /= [nx, ny]) .or. size(y) /= ny) return
+        if ((size(cov_xx, 1) /= nx .or. size(cov_xx, 2) /= nx)) return
+        if ((size(cov_yy, 1) /= ny .or. size(cov_yy, 2) /= ny)) return
+        if ((size(cov_xy, 1) /= nx .or. size(cov_xy, 2) /= ny) .or. size(y) /= ny) return
         if (.not. all(ieee_is_finite(mean_x))) return
         if (.not. all(ieee_is_finite(mean_y))) return
         if (.not. all(ieee_is_finite(y))) return
@@ -84,10 +91,13 @@ contains
         if (.not. status_ok(status)) return
         call factor%solve(solved, status)
         if (.not. status_ok(status)) return
-        candidate = cov_xx - matmul(cov_xy, solved)
-        call validate_covariance(candidate, status)
+        candidate = matmul(cov_xy, solved)
+        candidate = cov_xx - candidate
+        call validate_covariance(candidate, status, &
+            reference_scale=maxval(abs(cov_xx)))
         if (.not. status_ok(status)) return
-        post_mean = mean_x + matmul(cov_xy, alpha)
+        post_mean = matmul(cov_xy, alpha)
+        post_mean = mean_x + post_mean
         post_cov = candidate
         if (.not. all(ieee_is_finite(post_mean))) then
             deallocate (post_mean, post_cov)
@@ -105,14 +115,18 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(cholesky_factorization_t) :: factor
         real(dp), allocatable :: m(:), c(:, :), alpha(:), beta(:, :), da(:), db(:, :)
+        real(dp), allocatable :: vector_work(:), matrix_work(:, :)
         call gaussian_condition(mean_x, cov_xx, mean_y, cov_yy, cov_xy, y, m, c, status)
         if (.not. status_ok(status)) return
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning JVP shape/data')
         if (size(dmean_x) /= size(mean_x) .or. size(dy) /= size(y)) return
         if (size(dmean_y) /= size(mean_y)) return
-        if (any(shape(dcov_xx) /= shape(cov_xx))) return
-        if (any(shape(dcov_yy) /= shape(cov_yy))) return
-        if (any(shape(dcov_xy) /= shape(cov_xy))) return
+        if ((size(dcov_xx, 1) /= size(cov_xx, 1) .or. &
+            size(dcov_xx, 2) /= size(cov_xx, 2))) return
+        if ((size(dcov_yy, 1) /= size(cov_yy, 1) .or. &
+            size(dcov_yy, 2) /= size(cov_yy, 2))) return
+        if ((size(dcov_xy, 1) /= size(cov_xy, 1) .or. &
+            size(dcov_xy, 2) /= size(cov_xy, 2))) return
         if (.not. all(ieee_is_finite(dmean_x))) return
         if (.not. all(ieee_is_finite(dmean_y))) return
         if (.not. all(ieee_is_finite(dy))) return
@@ -126,14 +140,25 @@ contains
         if (.not. status_ok(status)) return
         call factor%solve(beta, status)
         if (.not. status_ok(status)) return
-        da = dy - dmean_y - matmul(dcov_yy, alpha)
-        db = transpose(dcov_xy) - matmul(dcov_yy, beta)
+        da = matmul(dcov_yy, alpha)
+        da = dy - dmean_y - da
+        db = matmul(dcov_yy, beta)
+        db = transpose(dcov_xy) - db
         call factor%solve(da, status)
         if (.not. status_ok(status)) return
         call factor%solve(db, status)
         if (.not. status_ok(status)) return
-        dpost_mean = dmean_x + matmul(dcov_xy, alpha) + matmul(cov_xy, da)
-        dpost_cov = dcov_xx - matmul(dcov_xy, beta) - matmul(cov_xy, db)
+        dpost_mean = matmul(dcov_xy, alpha)
+        vector_work = matmul(cov_xy, da)
+        dpost_mean = dmean_x + dpost_mean + vector_work
+        dpost_cov = matmul(dcov_xy, beta)
+        matrix_work = matmul(cov_xy, db)
+        dpost_cov = dcov_xx - dpost_cov - matrix_work
+        if (.not. all(ieee_is_finite(dpost_mean)) .or. &
+            .not. all(ieee_is_finite(dpost_cov))) then
+            deallocate(dpost_mean, dpost_cov)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning JVP overflow')
+        end if
     end subroutine
 
     subroutine gaussian_logpdf(value, mean, cov, log_density, status)
@@ -146,7 +171,7 @@ contains
         log_density = 0.0_dp
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'Gaussian density shape/data')
         if (size(value) /= size(mean)) return
-        if (any(shape(cov) /= [size(mean), size(mean)])) return
+        if ((size(cov, 1) /= size(mean) .or. size(cov, 2) /= size(mean))) return
         if (.not. all(ieee_is_finite(value))) return
         if (.not. all(ieee_is_finite(mean))) return
         call validate_covariance(cov, status, .true.)
@@ -168,15 +193,17 @@ contains
         real(dp), intent(in) :: mean(:), cov(:, :), jacobian(:, :)
         real(dp), allocatable, intent(out) :: out_mean(:), out_cov(:, :)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: work(:, :)
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'linear propagation shape/data')
         if (size(jacobian, 2) /= size(mean) .or. size(jacobian, 1) < 1) return
-        if (any(shape(cov) /= [size(mean), size(mean)])) return
+        if ((size(cov, 1) /= size(mean) .or. size(cov, 2) /= size(mean))) return
         if (.not. all(ieee_is_finite(mean))) return
         if (.not. all(ieee_is_finite(jacobian))) return
         call validate_covariance(cov, status)
         if (.not. status_ok(status)) return
         out_mean = matmul(jacobian, mean)
-        out_cov = matmul(matmul(jacobian, cov), transpose(jacobian))
+        work = matmul(jacobian, cov)
+        out_cov = matmul(work, transpose(jacobian))
         if (.not. all(ieee_is_finite(out_mean)) .or. &
             .not. all(ieee_is_finite(out_cov))) then
             deallocate (out_mean, out_cov)
@@ -206,6 +233,12 @@ contains
                     lower(i), upper(i), unused)
             end if
         end do
+        if (.not. all(ieee_is_finite(lower)) .or. &
+            .not. all(ieee_is_finite(upper))) then
+            deallocate(lower, upper)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'interval overflow')
+            return
+        end if
         call status_set(status, FORTNUM_OK, '')
     end subroutine
 end module fortprob_gaussian
