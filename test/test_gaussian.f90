@@ -6,18 +6,19 @@ module gaussian_tests
     use fortprob_gaussian, only: gaussian_condition, gaussian_condition_jvp, &
         gaussian_logpdf, linear_propagate, gaussian_intervals, validate_covariance
     use fortprob_regression, only: bayesian_linear_fit, bayesian_linear_predict, &
-        bayesian_linear_fit_diagonal
+        bayesian_linear_fit_diagonal, bayesian_linear_predict_diagonal
     implicit none
 contains
     subroutine collect(tests)
         type(unittest_type), allocatable, intent(out) :: tests(:)
-        allocate(tests(6))
+        allocate(tests(7))
         tests(1) = new_unittest('scalar-conditioning', scalar)
         tests(2) = new_unittest('correlated-regression', regression)
         tests(3) = new_unittest('conditioning-jvp', jvp)
         tests(4) = new_unittest('diagonal-regression', diagonal)
         tests(5) = new_unittest('density-propagation-intervals', helpers)
         tests(6) = new_unittest('invalid-and-singular', invalid)
+        tests(7) = new_unittest('diagonal-prediction', diagonal_prediction)
     end subroutine
     subroutine scalar(error)
         type(error_type), allocatable, intent(out) :: error
@@ -53,6 +54,27 @@ contains
             0.0_dp, 1.0_dp], [2, 2]))) < 1e-14_dp)
         if (allocated(error)) return
         call check(error, maxval(abs(oc - pc - eye)) < 1e-14_dp)
+    end subroutine
+    subroutine diagonal_prediction(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(fortnum_status_t) :: s
+        real(dp) :: query(2, 2), cov(2, 2)
+        real(dp), allocatable :: m(:), v(:), observation(:)
+        query = reshape([1.0_dp, 1.0_dp, 1.0_dp, -1.0_dp], [2, 2])
+        cov = reshape([0.625_dp, 0.125_dp, 0.125_dp, 0.625_dp], [2, 2])
+        call bayesian_linear_predict_diagonal(query, [0.125_dp, 0.625_dp], &
+            cov, m, v, s, [1.0_dp, 2.0_dp], observation)
+        call check(error, status_ok(s)); if (allocated(error)) return
+        call check(error, maxval(abs(m-[0.75_dp, -0.5_dp])) < 1e-14_dp)
+        if (allocated(error)) return
+        call check(error, maxval(abs(v-[1.5_dp, 1.0_dp])) < 1e-14_dp)
+        if (allocated(error)) return
+        call check(error, maxval(abs(observation-[2.5_dp, 3.0_dp])) < 1e-14_dp)
+        if (allocated(error)) return
+        call bayesian_linear_predict_diagonal(query, [0.125_dp, 0.625_dp], &
+            cov, m, v, s, observation_variance=observation)
+        call check(error, .not. status_ok(s)); if (allocated(error)) return
+        call check(error, .not. allocated(m) .and. .not. allocated(v))
     end subroutine
     subroutine diagonal(error)
         type(error_type), allocatable, intent(out) :: error

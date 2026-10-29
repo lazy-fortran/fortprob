@@ -2,14 +2,14 @@ module fortprob_regression
     use, intrinsic :: iso_fortran_env, only: dp => real64
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_OK
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortprob_gaussian, only: gaussian_condition, validate_covariance, &
         linear_propagate
     implicit none
     private
     public :: bayesian_linear_fit, bayesian_linear_predict, &
-        bayesian_linear_fit_diagonal
+        bayesian_linear_fit_diagonal, bayesian_linear_predict_diagonal
 contains
     subroutine bayesian_linear_fit(design, y, noise_cov, prior_mean, prior_cov, &
             coef_mean, coef_cov, status)
@@ -91,8 +91,63 @@ contains
         if (.not. status_ok(status)) return
         call factor%solve(identity, status)
         if (.not. status_ok(status)) return
+        if (.not. all(ieee_is_finite(rhs)) .or. &
+            .not. all(ieee_is_finite(identity))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal regression solve overflow')
+            return
+        end if
         coef_mean = rhs
         coef_cov = identity
+    end subroutine
+
+    subroutine bayesian_linear_predict_diagonal(design, coef_mean, coef_cov, &
+            mean, latent_variance, status, noise_variance, observation_variance)
+        real(dp), intent(in) :: design(:, :), coef_mean(:), coef_cov(:, :)
+        real(dp), allocatable, intent(out) :: mean(:), latent_variance(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: noise_variance(:)
+        real(dp), allocatable, intent(out), optional :: observation_variance(:)
+        real(dp), allocatable :: work(:, :)
+        integer :: n, p, i
+        n = size(design, 1); p = size(design, 2)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal prediction shape/data')
+        if (n < 1 .or. p < 1 .or. size(coef_mean) /= p) return
+        if (size(coef_cov, 1) /= p .or. size(coef_cov, 2) /= p) return
+        if (.not. all(ieee_is_finite(design))) return
+        if (.not. all(ieee_is_finite(coef_mean))) return
+        if (present(observation_variance)) then
+            if (.not. present(noise_variance)) return
+        end if
+        if (present(noise_variance)) then
+            if (size(noise_variance) /= n) return
+            if (.not. all(ieee_is_finite(noise_variance))) return
+            if (any(noise_variance < 0.0_dp)) return
+        end if
+        call validate_covariance(coef_cov, status)
+        if (.not. status_ok(status)) return
+        mean = matmul(design, coef_mean)
+        work = matmul(design, coef_cov)
+        allocate(latent_variance(n))
+        !$omp parallel do default(none) shared(n, design, work, latent_variance) private(i)
+        do i = 1, n
+            latent_variance(i) = dot_product(design(i, :), work(i, :))
+        end do
+        !$omp end parallel do
+        if (.not. all(ieee_is_finite(mean)) .or. &
+            .not. all(ieee_is_finite(latent_variance))) then
+            deallocate(mean, latent_variance)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal prediction overflow')
+            return
+        end if
+        if (present(observation_variance)) then
+            observation_variance = latent_variance + noise_variance
+            if (.not. all(ieee_is_finite(observation_variance))) then
+                deallocate(mean, latent_variance, observation_variance)
+                call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal prediction overflow')
+                return
+            end if
+        end if
+        call status_set(status, FORTNUM_OK, '')
     end subroutine
 
     subroutine bayesian_linear_predict(design, coef_mean, coef_cov, mean, &
@@ -123,7 +178,14 @@ contains
                 deallocate (mean, latent_cov)
                 return
             end if
-            if (present(observation_cov)) observation_cov = latent_cov + noise_cov
+            if (present(observation_cov)) then
+                observation_cov = latent_cov + noise_cov
+                if (.not. all(ieee_is_finite(observation_cov))) then
+                    deallocate(mean, latent_cov, observation_cov)
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, 'prediction overflow')
+                    return
+                end if
+            end if
         end if
     end subroutine
 end module fortprob_regression
