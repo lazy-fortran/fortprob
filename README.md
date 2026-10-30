@@ -82,6 +82,30 @@ domain error, NaN moments and negative infinite log mass. Nonfinite inputs,
 negative variance or unrepresentable standardized bounds/results return a domain
 error. Check status before using outputs.
 
+`fortprob_laplace` exports
+`laplace_at_mode(log_joint_mode,hessian,covariance,log_evidence,status)`.
+All numeric inputs and outputs use real64; `covariance` is allocatable and
+`status` is `fortnum_status_t`. The caller supplies a stationary interior mode,
+the log joint density there, and the full Hessian of the negative log joint
+density in the same parameter coordinates. The result is the inverse Hessian
+and the local Laplace approximation to the log integral. No optimizer or
+stationarity check is provided. A normalized posterior gives a log integral
+approximately zero; model evidence requires the joint density with every proper
+prior and likelihood normalizer, including coordinate-transformation Jacobians.
+The caller is responsible for these normalizers. Improper priors do not define
+model evidence.
+
+The Hessian must be finite, symmetric to the existing covariance roundoff
+tolerance, and strictly positive definite. Failed calls leave `covariance`
+unallocated; all outputs require a successful status. There is no jitter or
+Gauss–Newton substitution. This is a local unimodal approximation, not an exact
+integral or a treatment of boundaries or multiple modes. The nonlinear test uses
+`x ~ N(0,0.25)` and `y=1 ~ N(x**2,1)`: its unique mode is zero, its full
+curvature is 2 (Gauss–Newton gives 4), and Laplace overestimates independently
+adaptively integrated evidence by about 19.25%. Exact Gaussian and independently
+marginalized linear-regression tests also check normalization under parameter
+rescaling.
+
 There is no diagonal stabilization, eigenvalue clipping, or repair of inputs.
 Symmetry and positive semidefiniteness checks allow roundoff of
 `128*epsilon(real64)*dimension*max(abs(cov))`; conditional covariance uses
