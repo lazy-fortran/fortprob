@@ -162,6 +162,17 @@ are unchanged, so roundoff can leave a tiny negative variance, which the
 interval helper rejects. Singular observation systems return an error;
 rank-aware conditioning is not implemented.
 
+`fortprob_mixture` provides the pure routine
+`probability_mean(probabilities,weights,value,status)` for a normalized weighted
+average of probabilities. Weights need not sum to one. The arrays must be
+nonempty and match in size, probabilities must be finite and in `[0,1]`, and
+weights must be finite, nonnegative and include a positive value. Zero weights
+make no contribution; their probabilities must still be valid. Rescaling by
+the largest weight avoids overflow, and successive
+convex updates avoid accumulating rounded weights into a probability above one.
+No output clipping is applied. Invalid input returns `FORTNUM_DOMAIN_ERROR`
+and a NaN value.
+
 Build and test with `fpm test`. The test-drive suite checks exact scalar and
 correlated multivariate answers, negative cases, and directional derivatives
 against independent central finite differences. All fixtures are synthetic.
