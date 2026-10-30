@@ -1,5 +1,5 @@
 module fortprob_empirical
-    use, intrinsic :: iso_fortran_env, only: dp => real64
+    use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, &
         ieee_quiet_nan, ieee_positive_inf
     use fortnum_status, only: fortnum_status_t, status_set, &
@@ -68,24 +68,26 @@ contains
         real(dp), intent(in) :: query
         type(fortnum_status_t), intent(out) :: status
         real(dp) :: probability
-        integer :: lo, hi, middle, n
+        integer :: n
+        integer(int64) :: lo, hi, middle
         probability = ieee_value(0.0_dp, ieee_quiet_nan)
         call status_set(status, FORTNUM_DOMAIN_ERROR, &
             'finite query and fitted calibration required')
         n = self%count()
         if (n == 0) return
         if (.not. ieee_is_finite(query)) return
-        lo = 1
-        hi = n
+        lo = 1_int64
+        hi = int(n, int64)
         do while (lo <= hi)
-            middle = lo + (hi - lo)/2
+            middle = lo + (hi - lo)/2_int64
             if (self%scores(middle) < query) then
-                lo = middle + 1
+                lo = middle + 1_int64
             else
-                hi = middle - 1
+                hi = middle - 1_int64
             end if
         end do
-        call fortprob_empirical_tail_leaf(real(n, dp), real(n - hi, dp), probability)
+        call fortprob_empirical_tail_leaf(real(n, dp), &
+            real(int(n, int64) - hi, dp), probability)
         call status_set(status, FORTNUM_OK, '')
     end function
 
