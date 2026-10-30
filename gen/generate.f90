@@ -10,12 +10,12 @@ program generate
     implicit none
     type(arena_t), target :: arena
     type(expr_t) :: variance, mean, z, root(3), n, logdet, quadratic, density(1)
-    type(expr_t) :: count_ge, alpha, empirical(1)
+    type(expr_t) :: count_ge, alpha, empirical(1), log_joint_mode
     type(expr_t) :: a, denominator, derivative, k, ratio, leaves(2)
     type(kernel_emit_spec_t) :: spec
     type(kernel_ir_t) :: ir
     type(str_t) :: source
-    character(:), allocatable :: message
+    character(:), allocatable :: message, leaf_source
     logical :: good
     integer :: unit
     call arena%init()
@@ -54,6 +54,27 @@ program generate
         status='replace')
     write (unit, '(a)') chars(source)
     close (unit)
+    log_joint_mode = sym(arena, 'log_joint_mode')
+    density = [log_joint_mode + 0.5_dp*n*log(2.0_dp*acos(-1.0_dp)) &
+        - 0.5_dp*logdet]
+    call lower_kernel_ir(density, ir, good, message)
+    if (.not. good) error stop message
+    spec%policy%shape_fma = .false.
+    spec%name = str('fortprob_laplace_leaf')
+    spec%args = [str('n'), str('log_joint_mode'), str('logdet')]
+    spec%outputs = [str('log_evidence')]
+    source = emit_fortran_kernel_ir(ir, spec, good, message)
+    if (.not. good) error stop message
+    open (newunit=unit, file='src/generated/fortprob_laplace_leaf.f90', &
+        status='replace')
+    leaf_source = chars(source)
+    do while (len(leaf_source) > 0)
+        if (leaf_source(len(leaf_source):) /= new_line('a')) exit
+        leaf_source = leaf_source(:len(leaf_source) - 1)
+    end do
+    write (unit, '(a)') leaf_source
+    close (unit)
+    spec%policy%shape_fma = .true.
     count_ge = sym(arena, 'count_ge')
     alpha = sym(arena, 'alpha')
     empirical = [(1.0_dp + count_ge)/(n + 1.0_dp)]

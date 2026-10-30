@@ -28,6 +28,10 @@ For independent observation errors, use
 It accepts a strictly positive variance per observation and solves in coefficient
 space, storing only the design and coefficient-size matrices: `O(n*p+p*p)`
 storage for `n` observations and `p` coefficients, without an `n` by `n` matrix.
+The optional final argument `log_evidence` returns the normalized marginal log
+density after integrating the coefficients against the supplied proper Gaussian
+prior. Noise variances and prior parameters are fixed inputs; this does not
+integrate their uncertainty or justify priors estimated from the same targets.
 `bayesian_linear_predict_diagonal(design,coef_mean,coef_cov,mean,latent_variance,status,noise_variance,observation_variance)`
 computes marginal prediction variances with `O(n*p+p*p)` storage for `n` query
 rows and `p` coefficients. Optional
@@ -81,6 +85,63 @@ a point mass: conditioning succeeds when `mu >= lower`; otherwise it returns a
 domain error, NaN moments and negative infinite log mass. Nonfinite inputs,
 negative variance or unrepresentable standardized bounds/results return a domain
 error. Check status before using outputs.
+
+`fortprob_laplace` exports
+`laplace_at_mode(log_joint_mode,hessian,covariance,log_evidence,status)`.
+All numeric inputs and outputs use real64; `covariance` is allocatable and
+`status` is `fortnum_status_t`. The caller supplies a stationary interior mode,
+the log joint density there, and the full Hessian of the negative log joint
+density in the same parameter coordinates. The result is the inverse Hessian
+and the local Laplace approximation to the log integral. No optimizer or
+stationarity check is provided. A normalized posterior gives a log integral
+approximately zero; model evidence requires the joint density with every proper
+prior and likelihood normalizer, including coordinate-transformation Jacobians.
+The caller is responsible for these normalizers. Improper priors do not define
+model evidence.
+
+The Hessian must be finite, symmetric to the existing covariance roundoff
+tolerance, and strictly positive definite. Failed calls leave `covariance`
+unallocated; all outputs require a successful status. There is no jitter or
+Gauss–Newton substitution. This is a local unimodal approximation, not an exact
+integral or a treatment of boundaries or multiple modes. The nonlinear test uses
+`x ~ N(0,0.25)` and `y=1 ~ N(x**2,1)`: its unique mode is zero, its full
+curvature is 2 (Gauss–Newton gives 4), and Laplace overestimates independently
+adaptively integrated evidence by about 19.25%. Exact Gaussian and independently
+marginalized linear-regression tests also check normalization under parameter
+rescaling.
+
+`fortprob_affine_filter` provides conditional Gaussian filtering when the state
+mean depends affinely on unknown regression coefficients. Use
+`gaussian_interval_t%init(F,A,Qend,qavg,qcross,measurement_variance,status)` to
+configure a transition. Here `F` is the state-transition matrix, `A` the
+observation row, `Qend` the end-state process covariance, `qavg` the process
+variance in the observation, and `qcross` their cross-covariance. The
+matrix arguments `F`, `Qend` and `P_initial` have shape `(nstate,nstate)`;
+`A` and `qcross` have shape `(nstate)`. The joint
+process covariance must be positive semidefinite; measurement variance must be
+strictly positive. This permits interval-averaged observations whose process
+noise correlates with the state at the interval end.
+
+Initialize `affine_gaussian_filter_t` with
+`init(P_initial,ncoeff,status)`. Its conditional state has mean `c-D*beta`,
+initially zero, and covariance `P_initial`. Call
+`step(interval,design,y_minus_base,condition,offset,effective_design,innovation_variance,status)`
+in observation order. The caller allocates `effective_design(ncoeff)`.
+Before the optional observation update, the outputs describe the observation
+mean `base+offset+effective_design*beta` and its conditional innovation variance.
+If `condition` is false, the target is ignored and the state only propagates.
+If true, the update conditions on that target while retaining its affine
+coefficient dependence. A Joseph covariance update avoids cancellation when
+measurement noise is small. Failed steps leave the filter unchanged.
+
+For each conditioned row, whiten the residual as
+`(y_minus_base-offset)/sqrt(innovation_variance)` and divide
+every entry of `effective_design` by the same square root. Retain the sum of log innovation variances when
+computing normalized evidence. Coefficient inference remains the caller's
+responsibility. Marginal prediction variance additionally requires the
+effective design times coefficient covariance times its transpose; it must not
+add an independently estimated state variance again. The interface provides
+conditional Gaussian moments, not nonlinear filtering or filter derivatives.
 
 There is no diagonal stabilization, eigenvalue clipping, or repair of inputs.
 Symmetry and positive semidefiniteness checks allow roundoff of
