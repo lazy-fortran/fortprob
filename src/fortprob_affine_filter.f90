@@ -82,7 +82,7 @@ contains
         real(dp), allocatable :: pa(:), cross(:), c0(:), d0(:, :), p0(:, :)
         real(dp), allocatable :: work(:, :), gain(:), transition(:, :)
         real(dp) :: scale, tolerance, state_variance
-        integer :: n, j
+        integer :: n, i, j
         offset = 0.0_dp
         effective_design = 0.0_dp
         innovation_variance = 0.0_dp
@@ -106,20 +106,42 @@ contains
         innovation_variance = state_variance + interval%qavg &
             + interval%measurement_variance
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter step overflow')
-        if (.not. ieee_is_finite(offset)) return
-        if (.not. all(ieee_is_finite(effective_design))) return
-        if (.not. ieee_is_finite(innovation_variance)) return
-        if (innovation_variance <= 0.0_dp) return
+        if (.not. ieee_is_finite(offset)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter offset nonfinite')
+            return
+        end if
+        if (.not. all(ieee_is_finite(effective_design))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter effective design nonfinite')
+            return
+        end if
+        if (.not. ieee_is_finite(innovation_variance)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter innovation variance nonfinite')
+            return
+        end if
+        if (innovation_variance <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter innovation variance nonpositive')
+            return
+        end if
         tolerance = 128.0_dp*epsilon(1.0_dp)*real(n, dp) &
             *maxval(abs(self%p))*sum(abs(interval%a))**2
-        if (state_variance < -tolerance) return
+        if (state_variance < -tolerance) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter projected state variance negative')
+            return
+        end if
         cross = matmul(interval%f, pa)
         cross = cross + interval%qcross
         c0 = matmul(interval%f, self%c)
         d0 = matmul(interval%f, self%d)
         work = matmul(interval%f, self%p)
-        p0 = matmul(work, transpose(interval%f))
-        p0 = p0 + interval%qend
+        allocate(p0(n, n))
+        ! Assemble each covariance entry once in its symmetric representation.
+        do j = 1, n
+            do i = 1, j
+                p0(i, j) = dot_product(work(i, :), interval%f(j, :)) &
+                    + interval%qend(i, j)
+                p0(j, i) = p0(i, j)
+            end do
+        end do
         scale = maxval(abs(p0))
         if (condition) then
             c0 = c0 + cross*((y_minus_base - offset)/innovation_variance)
@@ -133,22 +155,39 @@ contains
                 transition(:, j) = transition(:, j) - gain*interval%a(j)
             end do
             work = matmul(transition, self%p)
-            p0 = matmul(work, transpose(transition))
-            p0 = p0 + interval%qend
             do j = 1, n
-                p0(:, j) = p0(:, j) - gain*interval%qcross(j) &
-                    - interval%qcross*gain(j) &
-                    + gain*(gain(j)*(interval%qavg + interval%measurement_variance))
+                do i = 1, j
+                    p0(i, j) = dot_product(work(i, :), transition(j, :)) &
+                        + interval%qend(i, j) &
+                        - (gain(i)*interval%qcross(j) + interval%qcross(i)*gain(j)) &
+                        + (gain(i)*gain(j))*(interval%qavg + interval%measurement_variance)
+                    p0(j, i) = p0(i, j)
+                end do
             end do
         end if
-        if (.not. all(ieee_is_finite(c0))) return
-        if (.not. all(ieee_is_finite(d0))) return
-        if (.not. all(ieee_is_finite(p0))) return
+        if (.not. all(ieee_is_finite(c0))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter propagated offset nonfinite')
+            return
+        end if
+        if (.not. all(ieee_is_finite(d0))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter propagated design nonfinite')
+            return
+        end if
+        if (.not. all(ieee_is_finite(p0))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter propagated covariance nonfinite')
+            return
+        end if
         ! Valid initial and joint process covariances preserve PSD analytically.
         tolerance = 128.0_dp*epsilon(1.0_dp)*real(n, dp)*scale
-        if (maxval(abs(p0 - transpose(p0))) > tolerance) return
+        if (maxval(abs(p0 - transpose(p0))) > tolerance) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter propagated covariance nonsymmetric')
+            return
+        end if
         do j = 1, n
-            if (p0(j, j) < -tolerance) return
+            if (p0(j, j) < -tolerance) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, 'filter propagated covariance diagonal negative')
+                return
+            end if
         end do
         call move_alloc(c0, self%c)
         call move_alloc(d0, self%d)

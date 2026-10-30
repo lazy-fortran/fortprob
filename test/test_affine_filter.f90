@@ -10,11 +10,12 @@ module affine_filter_tests
 contains
     subroutine collect(tests)
         type(unittest_type), allocatable, intent(out) :: tests(:)
-        allocate(tests(4))
+        allocate(tests(5))
         tests(1) = new_unittest('dense-joint-whitening-and-prediction', dense)
         tests(2) = new_unittest('normalized-coefficient-evidence', evidence)
         tests(3) = new_unittest('invalid-atomic-and-reset', invalid)
         tests(4) = new_unittest('cancellation-stress', cancellation)
+        tests(5) = new_unittest('symmetric-seven-state-recurrence', symmetric_recurrence)
     end subroutine
 
     subroutine dense(error)
@@ -209,6 +210,72 @@ contains
         call gaussian_logpdf(y, obs_mean, cov, reference, s)
         call check(error, status_ok(s), s%msg); if (allocated(error)) return
         call check(error, abs(z - reference) < 3e-13_dp)
+    end subroutine
+
+    subroutine symmetric_recurrence(error)
+        type(error_type), allocatable, intent(out) :: error
+        integer, parameter :: hp = selected_real_kind(30, 300)
+        type(gaussian_interval_t) :: interval
+        type(affine_gaussian_filter_t) :: filter
+        type(fortnum_status_t) :: s
+        real(dp) :: f(7, 7), a(7), initial(7, 7), zero(7, 7), fd(7)
+        real(dp) :: off, h(1), variance, expected, r
+        real(hp) :: precision(6, 6), b(6), power(6), aug(6, 7), solution(6)
+        real(hp) :: multiplier, pivot_row(7)
+        integer :: i, j, k, row, pivot
+        fd = [0.716531310573789271_dp, 0.846481724890614129_dp, &
+            0.920044414629323293_dp, 0.972604477116348343_dp, &
+            0.986207116743916257_dp, 0.993079612490316066_dp, &
+            0.716531310573789271_dp]
+        a = [0.850406068278632188_dp, 0.921109650656315226_dp, &
+            0.959467024448121042_dp, 0.986238823811457888_dp, &
+            0.993087594438032295_dp, 0.996535801394494047_dp, &
+            0.850406068278632188_dp]
+        f = 0.0_dp; initial = 0.0_dp; zero = 0.0_dp
+        precision = 0.0_hp; power = 1.0_hp
+        do j = 1, 7
+            f(j, j) = fd(j)
+        end do
+        do j = 1, 6
+            initial(j, j) = (400.0_dp/6.0_dp)*4.0_dp
+            precision(j, j) = 1.0_hp/real(initial(j, j), hp)
+        end do
+        r = 0.0100000000000000019_dp
+        call interval%init(f, a, zero, 0.0_dp, [0.0_dp, 0.0_dp, 0.0_dp, &
+            0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp], r, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call filter%init(initial, 1, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        do k = 1, 151
+            ! Condition the initial coordinates directly, independently of filtering.
+            b = real(a(:6), hp)*power
+            aug(:, :6) = precision; aug(:, 7) = b
+            do j = 1, 6
+                pivot = j - 1 + maxloc(abs(aug(j:6, j)), dim=1)
+                pivot_row = aug(j, :); aug(j, :) = aug(pivot, :)
+                aug(pivot, :) = pivot_row
+                do row = j + 1, 6
+                    multiplier = aug(row, j)/aug(j, j)
+                    aug(row, j:7) = aug(row, j:7) - multiplier*aug(j, j:7)
+                end do
+            end do
+            do j = 6, 1, -1
+                solution(j) = (aug(j, 7) - sum(aug(j, j + 1:6) &
+                    *solution(j + 1:6)))/aug(j, j)
+            end do
+            expected = real(real(r, hp) + sum(b*solution), dp)
+            call filter%step(interval, [0.0_dp], 0.0_dp, .true., off, h, variance, s)
+            call check(error, status_ok(s), s%msg); if (allocated(error)) return
+            call check(error, abs(variance - expected) &
+                < 1e-9_dp*max(r, abs(expected)))
+            if (allocated(error)) return
+            do j = 1, 6
+                do i = 1, 6
+                    precision(i, j) = precision(i, j) + b(i)*b(j)/real(r, hp)
+                end do
+            end do
+            power = power*real(fd(:6), hp)
+        end do
     end subroutine
 
     subroutine cancellation(error)
