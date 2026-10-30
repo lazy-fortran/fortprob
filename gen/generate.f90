@@ -10,6 +10,7 @@ program generate
     implicit none
     type(arena_t), target :: arena
     type(expr_t) :: variance, mean, z, root(3), n, logdet, quadratic, density(1)
+    type(expr_t) :: count_ge, alpha, empirical(1)
     type(kernel_emit_spec_t) :: spec
     type(kernel_ir_t) :: ir
     type(str_t) :: source
@@ -49,6 +50,32 @@ program generate
     source = emit_fortran_kernel_ir(ir, spec, good, message)
     if (.not. good) error stop message
     open (newunit=unit, file='src/generated/fortprob_logpdf_leaf.f90', &
+        status='replace')
+    write (unit, '(a)') chars(source)
+    close (unit)
+    count_ge = sym(arena, 'count_ge')
+    alpha = sym(arena, 'alpha')
+    empirical = [(1.0_dp + count_ge)/(n + 1.0_dp)]
+    call lower_kernel_ir(empirical, ir, good, message)
+    if (.not. good) error stop message
+    spec%name = str('fortprob_empirical_tail_leaf')
+    spec%args = [str('n'), str('count_ge')]
+    spec%outputs = [str('probability')]
+    source = emit_fortran_kernel_ir(ir, spec, good, message)
+    if (.not. good) error stop message
+    open (newunit=unit, file='src/generated/fortprob_empirical_tail_leaf.f90', &
+        status='replace')
+    write (unit, '(a)') chars(source)
+    close (unit)
+    empirical = [(n + 1.0_dp)*(1.0_dp - alpha)]
+    call lower_kernel_ir(empirical, ir, good, message)
+    if (.not. good) error stop message
+    spec%name = str('fortprob_empirical_rank_leaf')
+    spec%args = [str('n'), str('alpha')]
+    spec%outputs = [str('location')]
+    source = emit_fortran_kernel_ir(ir, spec, good, message)
+    if (.not. good) error stop message
+    open (newunit=unit, file='src/generated/fortprob_empirical_rank_leaf.f90', &
         status='replace')
     write (unit, '(a)') chars(source)
     close (unit)
