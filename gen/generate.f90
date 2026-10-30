@@ -11,6 +11,7 @@ program generate
     type(arena_t), target :: arena
     type(expr_t) :: variance, mean, z, root(3), n, logdet, quadratic, density(1)
     type(expr_t) :: count_ge, alpha, empirical(1)
+    type(expr_t) :: a, denominator, derivative, k, ratio, leaves(2)
     type(kernel_emit_spec_t) :: spec
     type(kernel_ir_t) :: ir
     type(str_t) :: source
@@ -76,6 +77,35 @@ program generate
     source = emit_fortran_kernel_ir(ir, spec, good, message)
     if (.not. good) error stop message
     open (newunit=unit, file='src/generated/fortprob_empirical_rank_leaf.f90', &
+        status='replace')
+    write (unit, '(a)') chars(source)
+    close (unit)
+    a = sym(arena, 'a')
+    denominator = sym(arena, 'denominator')
+    derivative = sym(arena, 'derivative')
+    k = sym(arena, 'k')
+    leaves = [a + k/denominator, 1.0_dp - k*derivative/denominator**2]
+    call lower_kernel_ir(leaves, ir, good, message)
+    if (.not. good) error stop message
+    spec%name = str('fortprob_mills_step_leaf')
+    spec%args = [str('a'), str('denominator'), str('derivative'), str('k')]
+    spec%outputs = [str('next_denominator'), str('next_derivative')]
+    source = emit_fortran_kernel_ir(ir, spec, good, message)
+    if (.not. good) error stop message
+    open (newunit=unit, file='src/generated/fortprob_mills_step_leaf.f90', &
+        status='replace')
+    write (unit, '(a)') chars(source)
+    close (unit)
+    ratio = sym(arena, 'ratio')
+    leaves = [ratio, 1.0_dp + a*ratio - ratio**2]
+    call lower_kernel_ir(leaves, ir, good, message)
+    if (.not. good) error stop message
+    spec%name = str('fortprob_truncated_leaf')
+    spec%args = [str('a'), str('ratio')]
+    spec%outputs = [str('shift'), str('variance_factor')]
+    source = emit_fortran_kernel_ir(ir, spec, good, message)
+    if (.not. good) error stop message
+    open (newunit=unit, file='src/generated/fortprob_truncated_leaf.f90', &
         status='replace')
     write (unit, '(a)') chars(source)
     close (unit)

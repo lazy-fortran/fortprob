@@ -71,6 +71,17 @@ Gaussian operations leave array outputs unallocated; inspect `status%code` and
   finite values, symmetry and definiteness. Its optional logical flag defaults
   to false. The optional nonnegative reference scale is for subtraction error.
 
+`fortprob_truncated` exports
+`normal_lower_truncated_moments(mu,variance,lower,mean,truncated_variance,log_mass,status)`.
+It returns the exact scalar Gaussian conditional moments for `X >= lower`, and
+`log_mass = log(P(X >= lower))`, with real64 scalar arguments and
+`fortnum_status_t`. Far-tail evaluation avoids subtractive cancellation in the
+variance and does not exponentiate the conditioning mass. Zero variance denotes
+a point mass: conditioning succeeds when `mu >= lower`; otherwise it returns a
+domain error, NaN moments and negative infinite log mass. Nonfinite inputs,
+negative variance or unrepresentable standardized bounds/results return a domain
+error. Check status before using outputs.
+
 There is no diagonal stabilization, eigenvalue clipping, or repair of inputs.
 Symmetry and positive semidefiniteness checks allow roundoff of
 `128*epsilon(real64)*dimension*max(abs(cov))`; conditional covariance uses
