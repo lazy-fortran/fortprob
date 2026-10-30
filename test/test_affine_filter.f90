@@ -10,12 +10,13 @@ module affine_filter_tests
 contains
     subroutine collect(tests)
         type(unittest_type), allocatable, intent(out) :: tests(:)
-        allocate(tests(5))
+        allocate(tests(6))
         tests(1) = new_unittest('dense-joint-whitening-and-prediction', dense)
         tests(2) = new_unittest('normalized-coefficient-evidence', evidence)
         tests(3) = new_unittest('invalid-atomic-and-reset', invalid)
         tests(4) = new_unittest('cancellation-stress', cancellation)
         tests(5) = new_unittest('symmetric-seven-state-recurrence', symmetric_recurrence)
+        tests(6) = new_unittest('subnormal-rank-one-propagation', subnormal_propagation)
     end subroutine
 
     subroutine dense(error)
@@ -276,6 +277,31 @@ contains
             end do
             power = power*real(fd(:6), hp)
         end do
+    end subroutine
+
+    subroutine subnormal_propagation(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(gaussian_interval_t) :: interval
+        type(affine_gaussian_filter_t) :: filter
+        type(fortnum_status_t) :: s
+        real(dp) :: initial(2, 2), f(2, 2), zero(2, 2), u, decay
+        real(dp) :: offset, h(1), variance, nan
+        u = nearest(0.0_dp, 1.0_dp)
+        decay = nearest(sqrt(2.0_dp*u), -1.0_dp)
+        initial = reshape([0.25_dp, 0.5_dp, 0.5_dp, 1.0_dp], [2, 2])
+        f = 0.0_dp; f(1, 1) = decay; f(2, 2) = decay
+        zero = 0.0_dp; nan = ieee_value(0.0_dp, ieee_quiet_nan)
+        call filter%init(initial, 1, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call interval%init(f, [2.0_dp, -1.0_dp], zero, 0.0_dp, &
+            [0.0_dp, 0.0_dp], 0.01_dp, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        ! The observation annihilates the rank-one state, before and after decay.
+        call filter%step(interval, [1.0_dp], nan, .false., offset, h, variance, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call filter%step(interval, [1.0_dp], nan, .false., offset, h, variance, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call check(error, variance == 0.01_dp)
     end subroutine
 
     subroutine cancellation(error)

@@ -131,8 +131,11 @@ Before the optional observation update, the outputs describe the observation
 mean `base+offset+effective_design*beta` and its conditional innovation variance.
 If `condition` is false, the target is ignored and the state only propagates.
 If true, the update conditions on that target while retaining its affine
-coefficient dependence. A Joseph covariance update avoids cancellation when
-measurement noise is small. Failed steps leave the filter unchanged.
+coefficient dependence. Internally, the state covariance is stored as a factor
+times its transpose. QR compression of the Joseph update's factor columns
+preserves this representation without subtracting covariance entries. This
+also avoids indefinite covariances caused by rounding extremely small entries
+after long decay. Failed steps leave the filter unchanged.
 
 For each conditioned row, whiten the residual as
 `(y_minus_base-offset)/sqrt(innovation_variance)` and divide
@@ -143,7 +146,15 @@ effective design times coefficient covariance times its transpose; it must not
 add an independently estimated state variance again. The interface provides
 conditional Gaussian moments, not nonlinear filtering or filter derivatives.
 
-There is no diagonal stabilization, eigenvalue clipping, or repair of inputs.
+The affine filter initializes covariance factors with
+[FortNum](https://github.com/lazy-fortran/fortnum)'s pivoted semidefinite
+factorization and its symmetry and reconstruction checks. Successful
+initialization establishes a semidefinite approximation within its documented
+roundoff bound, not exact semidefiniteness of the input. Projected state
+variance is a sum of squares; measurement variance must remain positive.
+No diagonal jitter or eigenvalue clipping is introduced.
+
+For the other covariance APIs, inputs are not repaired.
 Symmetry and positive semidefiniteness checks allow roundoff of
 `128*epsilon(real64)*dimension*max(abs(cov))`; conditional covariance uses
 at least the prior covariance scale after subtraction. Returned covariances
