@@ -10,6 +10,13 @@ module fortprob_regression
     private
     public :: bayesian_linear_fit, bayesian_linear_predict, &
         bayesian_linear_fit_diagonal, bayesian_linear_predict_diagonal
+    interface
+        pure subroutine fortprob_logpdf_leaf(n, logdet, quadratic, density)
+            import dp
+            real(dp), intent(in) :: n, logdet, quadratic
+            real(dp), intent(out) :: density
+        end subroutine
+    end interface
 contains
     subroutine bayesian_linear_fit(design, y, noise_cov, prior_mean, prior_cov, &
             coef_mean, coef_cov, status)
@@ -39,15 +46,19 @@ contains
     end subroutine
 
     subroutine bayesian_linear_fit_diagonal(design, y, noise_variance, &
-            prior_mean, prior_cov, coef_mean, coef_cov, status)
+            prior_mean, prior_cov, coef_mean, coef_cov, status, log_evidence)
         real(dp), intent(in) :: design(:, :), y(:), noise_variance(:)
         real(dp), intent(in) :: prior_mean(:), prior_cov(:, :)
         real(dp), allocatable, intent(out) :: coef_mean(:), coef_cov(:, :)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(out), optional :: log_evidence
         type(cholesky_factorization_t) :: factor
         real(dp), allocatable :: precision(:, :), weighted(:, :), rhs(:)
         real(dp), allocatable :: identity(:, :), work(:, :), weighted_y(:), prior_rhs(:)
+        real(dp), allocatable :: prior_precision(:, :), delta(:), residual(:), prior_work(:)
+        real(dp) :: prior_logdet, precision_logdet, quadratic
         integer :: n, p, i
+        if (present(log_evidence)) log_evidence = 0.0_dp
         n = size(design, 1); p = size(design, 2)
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal regression shape/data')
         if (n < 1 .or. p < 1 .or. size(y) /= n) return
@@ -68,8 +79,13 @@ contains
         precision = identity
         call factor%factorize(prior_cov, status)
         if (.not. status_ok(status)) return
+        if (present(log_evidence)) then
+            call factor%log_determinant(prior_logdet, status)
+            if (.not. status_ok(status)) return
+        end if
         call factor%solve(precision, status)
         if (.not. status_ok(status)) return
+        if (present(log_evidence)) prior_precision = precision
         ! Assemble coefficient-space normal equations without an n-by-n array.
         do i = 1, p
             weighted(:, i) = design(:, i)/noise_variance
@@ -87,6 +103,10 @@ contains
         end if
         call factor%factorize(precision, status)
         if (.not. status_ok(status)) return
+        if (present(log_evidence)) then
+            call factor%log_determinant(precision_logdet, status)
+            if (.not. status_ok(status)) return
+        end if
         call factor%solve(rhs, status)
         if (.not. status_ok(status)) return
         call factor%solve(identity, status)
@@ -95,6 +115,20 @@ contains
             .not. all(ieee_is_finite(identity))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, 'diagonal regression solve overflow')
             return
+        end if
+        if (present(log_evidence)) then
+            residual = matmul(design, rhs)
+            residual = y - residual
+            delta = rhs - prior_mean
+            prior_work = matmul(prior_precision, delta)
+            quadratic = sum(residual*(residual/noise_variance)) &
+                + dot_product(delta, prior_work)
+            call fortprob_logpdf_leaf(real(n, dp), sum(log(noise_variance)) &
+                + prior_logdet + precision_logdet, quadratic, log_evidence)
+            if (.not. ieee_is_finite(log_evidence)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, 'regression evidence overflow')
+                return
+            end if
         end if
         coef_mean = rhs
         coef_cov = identity

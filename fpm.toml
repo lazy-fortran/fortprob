@@ -6,7 +6,7 @@ description = "Gaussian conditioning and coefficient-space probabilistic inferen
 [build]
 auto-tests = true
 [dependencies]
-fortnum = { git = "https://github.com/lazy-fortran/fortnum.git", rev = "9034c6a2bd196e4ed66c62d098760565ac8085d6" }
+fortnum = { git = "https://github.com/lazy-fortran/fortnum.git", rev = "711c9482d706530153eb10266de2f83fac965984" }
 [dev-dependencies]
 test-drive = { git = "https://github.com/fortran-lang/test-drive.git", rev = "791484a79a24cbc00be6f74e53c6e030cb75efe2" }
 [fortran]
