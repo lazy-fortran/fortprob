@@ -9,6 +9,15 @@ module fortprob_gaussian
     private
     public :: gaussian_condition, gaussian_condition_jvp, gaussian_logpdf
     public :: validate_covariance, linear_propagate, gaussian_intervals
+    type, public :: gaussian_conditioner_t
+        private
+        type(cholesky_factorization_t) :: factor
+        real(dp), allocatable :: alpha(:)
+        logical :: fitted = .false.
+    contains
+        procedure :: fit => conditioner_fit
+        procedure :: condition => conditioner_condition
+    end type gaussian_conditioner_t
     interface
         pure subroutine fortprob_interval_leaf(mean, variance, z, lower, upper, ds)
             import dp
@@ -31,6 +40,35 @@ contains
         real(dp), allocatable :: values(:), vectors(:, :)
         real(dp) :: tolerance
         integer :: n, info
+        call covariance_structure(cov, status, tolerance, reference_scale)
+        if (.not. status_ok(status)) return
+        if (present(positive_definite)) then
+            if (positive_definite) then
+                call factor%factorize(cov, status)
+                return
+            end if
+        end if
+        n = size(cov, 1)
+        allocate (values(n), vectors(n, n))
+        call symmetric_eigen(cov, values, vectors, info)
+        if (info /= 0) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                'covariance eigenvalue validation failed')
+            return
+        end if
+        if (minval(values) < -tolerance) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'invalid covariance')
+            return
+        end if
+        call status_set(status, FORTNUM_OK, '')
+    end subroutine
+
+    subroutine covariance_structure(cov, status, tolerance, reference_scale)
+        real(dp), intent(in) :: cov(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(out) :: tolerance
+        real(dp), intent(in), optional :: reference_scale
+        integer :: n
         call status_set(status, FORTNUM_DOMAIN_ERROR, 'invalid covariance')
         n = size(cov, 1)
         if (n < 1 .or. size(cov, 2) /= n) return
@@ -43,22 +81,70 @@ contains
         end if
         tolerance = 128.0_dp*epsilon(1.0_dp)*real(n, dp)*tolerance
         if (maxval(abs(cov - transpose(cov))) > tolerance) return
-        if (present(positive_definite)) then
-            if (positive_definite) then
-                call factor%factorize(cov, status)
-                return
-            end if
-        end if
-        allocate (values(n), vectors(n, n))
-        call symmetric_eigen(cov, values, vectors, info)
-        if (info /= 0) then
-            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
-                'covariance eigenvalue validation failed')
+        call status_set(status, FORTNUM_OK, '')
+    end subroutine covariance_structure
+
+    subroutine conditioner_fit(self, mean_y, cov_yy, y, status)
+        class(gaussian_conditioner_t), intent(out) :: self
+        real(dp), intent(in) :: mean_y(:), cov_yy(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: tolerance
+        integer :: n
+        n = size(mean_y)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning shape/data')
+        if (n < 1 .or. size(y) /= n) return
+        if (size(cov_yy, 1) /= n .or. size(cov_yy, 2) /= n) return
+        if (.not. all(ieee_is_finite(mean_y))) return
+        if (.not. all(ieee_is_finite(y))) return
+        call covariance_structure(cov_yy, status, tolerance)
+        if (.not. status_ok(status)) return
+        call self%factor%factorize(cov_yy, status)
+        if (.not. status_ok(status)) return
+        self%alpha = y - mean_y
+        call self%factor%solve(self%alpha, status)
+        if (.not. status_ok(status)) return
+        if (.not. all(ieee_is_finite(self%alpha))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning overflow')
             return
         end if
-        if (minval(values) < -tolerance) return
-        call status_set(status, FORTNUM_OK, '')
-    end subroutine
+        self%fitted = .true.
+    end subroutine conditioner_fit
+
+    subroutine conditioner_condition(self, mean_x, cov_xx, cov_xy, &
+            post_mean, post_cov, status)
+        class(gaussian_conditioner_t), intent(in) :: self
+        real(dp), intent(in) :: mean_x(:), cov_xx(:, :), cov_xy(:, :)
+        real(dp), allocatable, intent(out) :: post_mean(:), post_cov(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: solved(:, :), candidate(:, :)
+        integer :: nx
+        call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning fit required')
+        if (.not. self%fitted) return
+        nx = size(mean_x)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning shape/data')
+        if (nx < 1) return
+        if (size(cov_xx, 1) /= nx .or. size(cov_xx, 2) /= nx) return
+        if (size(cov_xy, 1) /= nx .or. size(cov_xy, 2) /= size(self%alpha)) return
+        if (.not. all(ieee_is_finite(mean_x))) return
+        if (.not. all(ieee_is_finite(cov_xy))) return
+        call validate_covariance(cov_xx, status)
+        if (.not. status_ok(status)) return
+        solved = transpose(cov_xy)
+        call self%factor%solve(solved, status)
+        if (.not. status_ok(status)) return
+        candidate = matmul(cov_xy, solved)
+        candidate = cov_xx - candidate
+        call validate_covariance(candidate, status, &
+            reference_scale=maxval(abs(cov_xx)))
+        if (.not. status_ok(status)) return
+        post_mean = matmul(cov_xy, self%alpha)
+        post_mean = mean_x + post_mean
+        post_cov = candidate
+        if (.not. all(ieee_is_finite(post_mean))) then
+            deallocate (post_mean, post_cov)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning overflow')
+        end if
+    end subroutine conditioner_condition
 
     subroutine gaussian_condition(mean_x, cov_xx, mean_y, cov_yy, cov_xy, y, &
             post_mean, post_cov, status)
@@ -66,44 +152,11 @@ contains
         real(dp), intent(in) :: cov_xy(:, :), y(:)
         real(dp), allocatable, intent(out) :: post_mean(:), post_cov(:, :)
         type(fortnum_status_t), intent(out) :: status
-        type(cholesky_factorization_t) :: factor
-        real(dp), allocatable :: alpha(:), solved(:, :), candidate(:, :)
-        integer :: nx, ny
-        nx = size(mean_x); ny = size(mean_y)
-        call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning shape/data')
-        if (nx < 1 .or. ny < 1) return
-        if ((size(cov_xx, 1) /= nx .or. size(cov_xx, 2) /= nx)) return
-        if ((size(cov_yy, 1) /= ny .or. size(cov_yy, 2) /= ny)) return
-        if ((size(cov_xy, 1) /= nx .or. size(cov_xy, 2) /= ny) .or. size(y) /= ny) return
-        if (.not. all(ieee_is_finite(mean_x))) return
-        if (.not. all(ieee_is_finite(mean_y))) return
-        if (.not. all(ieee_is_finite(y))) return
-        if (.not. all(ieee_is_finite(cov_xy))) return
-        call validate_covariance(cov_xx, status)
+        type(gaussian_conditioner_t) :: conditioner
+        call conditioner%fit(mean_y, cov_yy, y, status)
         if (.not. status_ok(status)) return
-        call validate_covariance(cov_yy, status, .true.)
-        if (.not. status_ok(status)) return
-        call factor%factorize(cov_yy, status)
-        if (.not. status_ok(status)) return
-        alpha = y - mean_y
-        solved = transpose(cov_xy)
-        call factor%solve(alpha, status)
-        if (.not. status_ok(status)) return
-        call factor%solve(solved, status)
-        if (.not. status_ok(status)) return
-        candidate = matmul(cov_xy, solved)
-        candidate = cov_xx - candidate
-        call validate_covariance(candidate, status, &
-            reference_scale=maxval(abs(cov_xx)))
-        if (.not. status_ok(status)) return
-        post_mean = matmul(cov_xy, alpha)
-        post_mean = mean_x + post_mean
-        post_cov = candidate
-        if (.not. all(ieee_is_finite(post_mean))) then
-            deallocate (post_mean, post_cov)
-            call status_set(status, FORTNUM_DOMAIN_ERROR, 'conditioning overflow')
-        end if
-    end subroutine
+        call conditioner%condition(mean_x, cov_xx, cov_xy, post_mean, post_cov, status)
+    end subroutine gaussian_condition
 
     subroutine gaussian_condition_jvp(mean_x, cov_xx, mean_y, cov_yy, cov_xy, y, &
             dmean_x, dcov_xx, dmean_y, dcov_yy, dcov_xy, dy, &

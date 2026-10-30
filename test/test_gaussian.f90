@@ -4,14 +4,15 @@ module gaussian_tests
     use testdrive, only: new_unittest, unittest_type, error_type, check
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortprob_gaussian, only: gaussian_condition, gaussian_condition_jvp, &
-        gaussian_logpdf, linear_propagate, gaussian_intervals, validate_covariance
+        gaussian_logpdf, linear_propagate, gaussian_intervals, validate_covariance, &
+        gaussian_conditioner_t
     use fortprob_regression, only: bayesian_linear_fit, bayesian_linear_predict, &
         bayesian_linear_fit_diagonal, bayesian_linear_predict_diagonal
     implicit none
 contains
     subroutine collect(tests)
         type(unittest_type), allocatable, intent(out) :: tests(:)
-        allocate(tests(7))
+        allocate(tests(8))
         tests(1) = new_unittest('scalar-conditioning', scalar)
         tests(2) = new_unittest('correlated-regression', regression)
         tests(3) = new_unittest('conditioning-jvp', jvp)
@@ -19,7 +20,47 @@ contains
         tests(5) = new_unittest('density-propagation-intervals', helpers)
         tests(6) = new_unittest('invalid-and-singular', invalid)
         tests(7) = new_unittest('diagonal-prediction', diagonal_prediction)
+        tests(8) = new_unittest('cached-conditioning-and-refit', cached)
     end subroutine
+    subroutine cached(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(gaussian_conditioner_t) :: conditioner
+        type(fortnum_status_t) :: s
+        real(dp) :: yy(2, 2), xy(1, 2), alpha(2), inverse(2, 2), solved(2)
+        real(dp), allocatable :: mean(:), covariance(:, :)
+        yy = reshape([2.0_dp, 0.5_dp, 0.5_dp, 1.0_dp], [2, 2])
+        xy = reshape([0.3_dp, -0.2_dp], [1, 2])
+        inverse = reshape([1.0_dp, -0.5_dp, -0.5_dp, 2.0_dp], [2, 2])/1.75_dp
+        alpha = matmul(inverse, [2.0_dp, -1.0_dp])
+        call conditioner%fit([1.0_dp, 2.0_dp], yy, [3.0_dp, 1.0_dp], s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call conditioner%condition([0.7_dp], reshape([1.0_dp], [1, 1]), xy, &
+            mean, covariance, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call check(error, abs(mean(1) - 0.7_dp - dot_product(xy(1, :), alpha)) < 1e-14_dp)
+        if (allocated(error)) return
+        solved = matmul(inverse, xy(1, :))
+        call check(error, abs(covariance(1, 1) - 1.0_dp + &
+            dot_product(xy(1, :), solved)) < 1e-14_dp)
+        if (allocated(error)) return
+        yy(1, 2) = 0.7_dp
+        call conditioner%fit([1.0_dp, 2.0_dp], yy, [3.0_dp, 1.0_dp], s)
+        call check(error, .not. status_ok(s)); if (allocated(error)) return
+        call conditioner%condition([0.7_dp], reshape([1.0_dp], [1, 1]), xy, &
+            mean, covariance, s)
+        call check(error, .not. status_ok(s)); if (allocated(error)) return
+        call check(error, .not. allocated(mean) .and. .not. allocated(covariance))
+        if (allocated(error)) return
+        call conditioner%fit([1.0_dp], reshape([2.0_dp], [1, 1]), [3.0_dp], s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call conditioner%condition([0.0_dp], reshape([1.0_dp], [1, 1]), &
+            reshape([0.5_dp], [1, 1]), mean, covariance, s)
+        call check(error, status_ok(s), s%msg); if (allocated(error)) return
+        call check(error, abs(mean(1) - 0.5_dp) < 1e-14_dp)
+        if (allocated(error)) return
+        call check(error, abs(covariance(1, 1) - 0.875_dp) < 1e-14_dp)
+    end subroutine cached
+
     subroutine scalar(error)
         type(error_type), allocatable, intent(out) :: error
         type(fortnum_status_t) :: s

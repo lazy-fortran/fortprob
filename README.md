@@ -47,6 +47,13 @@ Gaussian operations leave array outputs unallocated; inspect `status%code` and
 - `gaussian_condition(mean_x,cov_xx,mean_y,cov_yy,cov_xy,y,post_mean,post_cov,status)`.
   The cross-covariance has shape `(size(mean_x),size(mean_y))`. `cov_yy` must
   be positive definite; the joint distribution may be positive semidefinite.
+- `gaussian_conditioner_t` caches conditioning on fixed observations. Call
+  `fit(mean_y,cov_yy,y,status)` once, then
+  `condition(mean_x,cov_xx,cov_xy,post_mean,post_cov,status)` for each query block.
+  The fitted object owns its factorization and solved observation residual;
+  subsequent changes to the input arrays do not change it. A failed refit
+  invalidates the previous fit. Covariance validation is the same as for
+  `gaussian_condition`.
 - `gaussian_condition_jvp` takes the same six inputs, followed by their six
   directional derivatives, then `dpost_mean,dpost_cov,status`. This analytical
   implicit derivative includes both covariance and observation perturbations.
